@@ -235,6 +235,7 @@ def train(hyp, opt, device, tb_writer=None):
     # DP mode
     if cuda and rank == -1 and torch.cuda.device_count() > 1:
         model = torch.nn.DataParallel(model)
+        pass
 
     # SyncBatchNorm
     if opt.sync_bn and cuda and rank != -1:
@@ -243,7 +244,7 @@ def train(hyp, opt, device, tb_writer=None):
 
     # Trainloader
     dataloader, dataset = create_dataloader(train_path, imgsz, batch_size, gs, opt,
-                                            hyp=hyp, augment=True, cache=opt.cache_images, rect=opt.rect, rank=rank,
+                                            hyp=hyp, augment=False, cache=opt.cache_images, rect=opt.rect, rank=rank,
                                             world_size=opt.world_size, workers=opt.workers,
                                             image_weights=opt.image_weights, quad=opt.quad, prefix=colorstr('train: '))
     mlc = np.concatenate(dataset.labels, 0)[:, 0].max()  # max label class
@@ -270,7 +271,8 @@ def train(hyp, opt, device, tb_writer=None):
             # Anchors
             if not opt.noautoanchor:
                 check_anchors(dataset, model=model, thr=hyp['anchor_t'], imgsz=imgsz)
-            model.half().float()  # pre-reduce anchor precision
+            model.half().float().cuda(device=device)  # pre-reduce anchor precision
+            # model.half().float()  # pre-reduce anchor precision
 
     # DDP mode
     if cuda and rank != -1:
@@ -357,16 +359,16 @@ def train(hyp, opt, device, tb_writer=None):
                     imgs = F.interpolate(imgs, size=ns, mode='bilinear', align_corners=False)
 
             # Forward
-            with amp.autocast(enabled=cuda):
-                pred = model(imgs)  # forward
-                if 'loss_ota' not in hyp or hyp['loss_ota'] == 1:
-                    loss, loss_items = compute_loss_ota(pred, targets.to(device), imgs)  # loss scaled by batch_size
-                else:
-                    loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
-                if rank != -1:
-                    loss *= opt.world_size  # gradient averaged between devices in DDP mode
-                if opt.quad:
-                    loss *= 4.
+            # with amp.autocast(enabled=cuda):
+            pred = model(imgs)  # forward
+            if 'loss_ota' not in hyp or hyp['loss_ota'] == 1:
+                loss, loss_items = compute_loss_ota(pred, targets.to(device), imgs)  # loss scaled by batch_size
+            else:
+                loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
+            if rank != -1:
+                loss *= opt.world_size  # gradient averaged between devices in DDP mode
+            if opt.quad:
+                loss *= 4.
 
             # Backward
             scaler.scale(loss).backward()
