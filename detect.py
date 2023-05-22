@@ -14,6 +14,39 @@ from utils.general import check_img_size, check_requirements, check_imshow, non_
 from utils.plots import plot_one_box
 from utils.torch_utils import select_device, load_classifier, time_synchronized, TracedModel
 
+from torch.utils.tensorboard import SummaryWriter
+
+    
+class TBLogger(object):    
+    def __init__(self,logpath, log_filename) -> None:
+        self.logpath = logpath;
+        self.log_filename = log_filename;
+        self.writer = SummaryWriter(logpath + '/' + "tblog_"+ log_filename);
+        self.global_step=0;
+        
+    def add_histogram(self,values,name,step=0):
+        self.writer.add_histogram(f"{name}",values,self.global_step+step);
+    
+    def add_scalars(self,traces,name,step=0):
+        self.writer.add_scalars(f"{name}",traces,self.global_step+step);
+        
+    def add_weight_dist(self,w,name,step=0):
+        for layer in w.keys():
+            self.writer.add_histogram(f"{name}/{layer}",w[layer],self.global_step+step);
+            
+    def add_graph(self,net,input,verbose=False):
+        self.writer.add_graph(net,input,verbose=verbose);
+    
+    def add_embedding(self,name,feature,labels=None,image=None,step=0):
+        self.writer.add_embedding(feature,labels,image,self.global_step+step,tag=name);
+        
+    def add_imagegrid(self,name,image_grid,step=0):
+        self.writer.add_image(name, image_grid,self.global_step+step);
+    
+    def save_weights(self,name,weights,step=0):
+        _steps=self.global_step+step;
+        torch.save(weights, f'{self.logpath}/{name}_{_steps}.pt');
+        
 
 def detect(save_img=False):
     source, weights, view_img, save_txt, imgsz, trace = opt.source, opt.weights, opt.view_img, opt.save_txt, opt.img_size, not opt.no_trace
@@ -27,8 +60,10 @@ def detect(save_img=False):
 
     # Initialize
     set_logging()
+    tblogger = TBLogger(save_dir.as_posix(),"a");
     device = select_device(opt.device)
     half = device.type != 'cpu'  # half precision only supported on CUDA
+    half=False;
 
     # Load model
     model = attempt_load(weights, map_location=device)  # load FP32 model
@@ -65,15 +100,20 @@ def detect(save_img=False):
         model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
     old_img_w = old_img_h = imgsz
     old_img_b = 1
-
+    
+    isfirst=True;
     t0 = time.time()
     for path, img, im0s, vid_cap in dataset:
+            
         img = torch.from_numpy(img).to(device)
         img = img.half() if half else img.float()  # uint8 to fp16/32
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
         if img.ndimension() == 3:
             img = img.unsqueeze(0)
 
+        if isfirst:
+            tblogger.add_graph(model,img,verbose=True);
+            isfirst=False;
         # Warmup
         if device.type != 'cpu' and (old_img_b != img.shape[0] or old_img_h != img.shape[2] or old_img_w != img.shape[3]):
             old_img_b = img.shape[0]
@@ -89,7 +129,7 @@ def detect(save_img=False):
         t2 = time_synchronized()
 
         # Apply NMS
-        pred = non_max_suppression(pred, opt.conf_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms)
+        pred,_ = non_max_suppression(pred, opt.conf_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms)
         t3 = time_synchronized()
 
         # Apply Classifier
